@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"io"
 	"net"
 	"net/http"
@@ -110,6 +111,14 @@ func mustMarshalAV1(tu [][]byte) []byte {
 
 func mustMarshalAVCC(au [][]byte) []byte {
 	enc, err := h264.AVCC(au).Marshal()
+	if err != nil {
+		panic(err)
+	}
+	return enc
+}
+
+func mustMarshalADTS(pkts mpeg4audio.ADTSPackets) []byte {
+	enc, err := pkts.Marshal()
 	if err != nil {
 		panic(err)
 	}
@@ -1733,6 +1742,142 @@ func TestClientKLVSynchronousMPEGTS(t *testing.T) {
 	defer c.Close()
 
 	<-recv
+}
+
+func TestClientPackedAudio(t *testing.T) {
+	id3Tag := func(pts uint64) []byte {
+		priv := binary.BigEndian.AppendUint64([]byte(packedAudioTimestampOwner+"\x00"), pts)
+		frame := append([]byte{'P', 'R', 'I', 'V', 0, 0, 0, byte(len(priv)), 0, 0}, priv...)
+		return append([]byte{'I', 'D', '3', 4, 0, 0, 0, 0, 0, byte(len(frame))}, frame...)
+	}
+
+	mp3Frame := append([]byte{0xff, 0xfb, 0x90, 0x64}, make([]byte, 413)...)
+
+	ac3Frame := append([]byte{0x0b, 0x77, 0, 0, 0, 0x40, 0x40}, make([]byte, 121)...)
+
+	for _, ca := range []struct {
+		name  string
+		frame []byte
+		codec codecs.Codec
+		data  []byte
+		pts   int64
+	}{
+		{
+			"mpeg4audio",
+			mustMarshalADTS(mpeg4audio.ADTSPackets{{
+				Type:          mpeg4audio.ObjectTypeAACLC,
+				SampleRate:    48000,
+				ChannelConfig: 2,
+				AU:            []byte{1, 2, 3, 4},
+			}}),
+			&codecs.MPEG4Audio{
+				Config: mpeg4audio.AudioSpecificConfig{
+					Type:          mpeg4audio.ObjectTypeAACLC,
+					SampleRate:    48000,
+					ChannelConfig: 2,
+					ChannelCount:  2, //nolint:staticcheck
+				},
+			},
+			[]byte{1, 2, 3, 4},
+			1920,
+		},
+		{
+			"mpeg1audio",
+			mp3Frame,
+			&codecs.MPEG1Audio{},
+			mp3Frame,
+			2351,
+		},
+		{
+			"ac3",
+			ac3Frame,
+			&codecs.AC3{
+				SampleRate:   48000,
+				ChannelCount: 2,
+			},
+			ac3Frame,
+			2880,
+		},
+	} {
+		t.Run(ca.name, func(t *testing.T) {
+			httpServ := &http.Server{
+				Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					switch {
+					case r.Method == http.MethodGet && r.URL.Path == "/stream.m3u8":
+						w.Header().Set("Content-Type", `application/vnd.apple.mpegurl`)
+						w.Write([]byte("#EXTM3U\n" +
+							"#EXT-X-VERSION:3\n" +
+							"#EXT-X-ALLOW-CACHE:NO\n" +
+							"#EXT-X-TARGETDURATION:2\n" +
+							"#EXT-X-MEDIA-SEQUENCE:0\n" +
+							"#EXTINF:2,\n" +
+							"segment1.aac\n" +
+							"#EXTINF:2,\n" +
+							"segment1.aac\n" +
+							"#EXTINF:2,\n" +
+							"segment1.aac\n"))
+
+					case r.Method == http.MethodGet && r.URL.Path == "/segment1.aac":
+						w.Write(id3Tag(90000))
+						w.Write(ca.frame)
+						w.Write(id3Tag(0))
+						w.Write(ca.frame)
+					}
+				}),
+			}
+
+			ln, err := net.Listen("tcp", "localhost:5780")
+			require.NoError(t, err)
+
+			go httpServ.Serve(ln)
+			defer httpServ.Shutdown(context.Background())
+
+			recv := make(chan struct{})
+			var received []int64
+
+			var c *Client
+			c = &Client{
+				URI: "http://localhost:5780/stream.m3u8",
+				OnTracks: func(tracks []*Track) error {
+					require.Equal(t, 1, len(tracks))
+					require.Equal(t, ca.codec, tracks[0].Codec)
+
+					onData := func(pts int64, data []byte) {
+						require.Equal(t, ca.data, data)
+						if len(received) < 2 {
+							received = append(received, pts)
+							if len(received) == 2 {
+								close(recv)
+							}
+						}
+					}
+
+					switch ca.name {
+					case "mpeg4audio":
+						c.OnDataMPEG4Audio(tracks[0], func(pts int64, aus [][]byte) {
+							onData(pts, aus[0])
+						})
+
+					case "mpeg1audio":
+						c.OnDataMPEG1Audio(tracks[0], func(pts int64, frames [][]byte) {
+							onData(pts, frames[0])
+						})
+
+					case "ac3":
+						c.OnDataAC3(tracks[0], onData)
+					}
+					return nil
+				},
+			}
+
+			err = c.Start()
+			require.NoError(t, err)
+			defer c.Close()
+
+			<-recv
+			require.Equal(t, []int64{0, ca.pts}, received)
+		})
+	}
 }
 
 func TestClientSleepInCallbackMPEGTS(t *testing.T) {

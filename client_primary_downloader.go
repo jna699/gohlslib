@@ -17,6 +17,7 @@ func checkSupport(codecs []string) bool {
 			!strings.HasPrefix(codec, "hvc1.") &&
 			!strings.HasPrefix(codec, "hev1.") &&
 			!strings.HasPrefix(codec, "mp4a.") &&
+			codec != "ac-3" &&
 			codec != "opus" {
 			return false
 		}

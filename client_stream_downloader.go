@@ -70,8 +70,9 @@ type clientStreamDownloader struct {
 	rp                       *clientRoutinePool
 	client                   clientStreamDownloaderClient
 
-	segmentQueue *clientSegmentQueue
-	curSegmentID *int
+	segmentQueue   *clientSegmentQueue
+	curSegmentID   *int
+	processorAdded bool
 
 	// out
 	chTracks         chan []*Track
@@ -121,17 +122,7 @@ func (d *clientStreamDownloader) run(ctx context.Context) error {
 		}
 		proc.initialize()
 		d.rp.add(proc)
-	} else {
-		proc := &clientStreamProcessorMPEGTS{
-			onDecodeError:    d.onDecodeError,
-			isLeading:        d.isLeading,
-			segmentQueue:     d.segmentQueue,
-			rp:               d.rp,
-			streamDownloader: d,
-			client:           d.client,
-		}
-		proc.initialize()
-		d.rp.add(proc)
+		d.processorAdded = true
 	}
 
 	var err error
@@ -142,6 +133,10 @@ func (d *clientStreamDownloader) run(ctx context.Context) error {
 		err = d.runLowLatency(ctx)
 	} else {
 		err = d.runTraditional(ctx)
+	}
+
+	if !d.processorAdded {
+		return err
 	}
 
 	d.segmentQueue.push(&segmentData{
@@ -161,7 +156,7 @@ func (d *clientStreamDownloader) runLowLatency(ctx context.Context) error {
 			return err
 		}
 
-		d.segmentQueue.push(&segmentData{
+		d.pushSegment(&segmentData{
 			dateTime: dateTimeOfPreloadHint(pl),
 			payload:  byts,
 		})
@@ -186,7 +181,7 @@ func (d *clientStreamDownloader) runTraditional(ctx context.Context) error {
 			return err
 		}
 
-		d.segmentQueue.push(&segmentData{
+		d.pushSegment(&segmentData{
 			dateTime: seg.DateTime,
 			payload:  payload,
 		})
@@ -201,6 +196,39 @@ func (d *clientStreamDownloader) runTraditional(ctx context.Context) error {
 			return err
 		}
 	}
+}
+
+// pushSegment adds the MPEG-TS or Packed Audio processor on the first segment,
+// since only its content tells the two formats apart.
+func (d *clientStreamDownloader) pushSegment(seg *segmentData) {
+	if !d.processorAdded {
+		if isID3Tag(seg.payload) {
+			proc := &clientStreamProcessorPackedAudio{
+				isLeading:        d.isLeading,
+				rendition:        d.rendition,
+				segmentQueue:     d.segmentQueue,
+				rp:               d.rp,
+				streamDownloader: d,
+				client:           d.client,
+			}
+			proc.initialize()
+			d.rp.add(proc)
+		} else {
+			proc := &clientStreamProcessorMPEGTS{
+				onDecodeError:    d.onDecodeError,
+				isLeading:        d.isLeading,
+				segmentQueue:     d.segmentQueue,
+				rp:               d.rp,
+				streamDownloader: d,
+				client:           d.client,
+			}
+			proc.initialize()
+			d.rp.add(proc)
+		}
+		d.processorAdded = true
+	}
+
+	d.segmentQueue.push(seg)
 }
 
 func (d *clientStreamDownloader) downloadPlaylist(

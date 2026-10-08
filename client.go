@@ -62,6 +62,12 @@ type ClientOnDataH26xFunc func(pts int64, dts int64, au [][]byte)
 // ClientOnDataMPEG4AudioFunc is the prototype of the function passed to OnDataMPEG4Audio().
 type ClientOnDataMPEG4AudioFunc func(pts int64, aus [][]byte)
 
+// ClientOnDataMPEG1AudioFunc is the prototype of the function passed to OnDataMPEG1Audio().
+type ClientOnDataMPEG1AudioFunc func(pts int64, frames [][]byte)
+
+// ClientOnDataAC3Func is the prototype of the function passed to OnDataAC3().
+type ClientOnDataAC3Func func(pts int64, frame []byte)
+
 // ClientOnDataOpusFunc is the prototype of the function passed to OnDataOpus().
 type ClientOnDataOpusFunc func(pts int64, packets [][]byte)
 
@@ -247,6 +253,20 @@ func (c *Client) OnDataH26x(track *Track, cb ClientOnDataH26xFunc) {
 func (c *Client) OnDataMPEG4Audio(track *Track, cb ClientOnDataMPEG4AudioFunc) {
 	c.tracks[track].onData = func(pts int64, _ int64, data [][]byte) {
 		cb(pts, data)
+	}
+}
+
+// OnDataMPEG1Audio sets a callback that is called when data from a MPEG-1 Audio track is received.
+func (c *Client) OnDataMPEG1Audio(track *Track, cb ClientOnDataMPEG1AudioFunc) {
+	c.tracks[track].onData = func(pts int64, _ int64, data [][]byte) {
+		cb(pts, data)
+	}
+}
+
+// OnDataAC3 sets a callback that is called when data from an AC-3 track is received.
+func (c *Client) OnDataAC3(track *Track, cb ClientOnDataAC3Func) {
+	c.tracks[track].onData = func(pts int64, _ int64, data [][]byte) {
+		cb(pts, data[0])
 	}
 }
 
