@@ -69,14 +69,14 @@ type clientStreamDownloader struct {
 	firstPlaylist            *playlist.Media
 	rp                       *clientRoutinePool
 	client                   clientStreamDownloaderClient
+	chProcessorError         chan error
 
 	segmentQueue   *clientSegmentQueue
 	curSegmentID   *int
 	processorAdded bool
 
 	// out
-	chTracks         chan []*Track
-	chProcessorError chan error
+	chTracks chan []*Track
 
 	// in
 	chStartStreaming chan map[*Track]*clientTrack
@@ -84,7 +84,6 @@ type clientStreamDownloader struct {
 
 func (d *clientStreamDownloader) initialize() {
 	d.chTracks = make(chan []*Track)
-	d.chProcessorError = make(chan error)
 	d.chStartStreaming = make(chan map[*Track]*clientTrack)
 }
 

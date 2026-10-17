@@ -2,6 +2,7 @@ package gohlslib
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -135,10 +136,12 @@ type clientPrimaryDownloader struct {
 	onDecodeError             ClientOnDecodeErrorFunc
 	client                    clientPrimaryDownloaderClient
 
-	clientTracks map[*Track]*clientTrack
+	clientTracks     map[*Track]*clientTrack
+	chProcessorError chan error
 }
 
 func (d *clientPrimaryDownloader) initialize() {
+	d.chProcessorError = make(chan error)
 }
 
 func (d *clientPrimaryDownloader) run(ctx context.Context) error {
@@ -169,6 +172,7 @@ func (d *clientPrimaryDownloader) run(ctx context.Context) error {
 			firstPlaylist:            plt,
 			rp:                       d.rp,
 			client:                   d.client,
+			chProcessorError:         d.chProcessorError,
 		}
 		stream.initialize()
 		d.rp.add(stream)
@@ -200,6 +204,7 @@ func (d *clientPrimaryDownloader) run(ctx context.Context) error {
 			firstPlaylist:            nil,
 			rp:                       d.rp,
 			client:                   d.client,
+			chProcessorError:         d.chProcessorError,
 		}
 		stream.initialize()
 		d.rp.add(stream)
@@ -237,6 +242,7 @@ func (d *clientPrimaryDownloader) run(ctx context.Context) error {
 						rendition:                pl,
 						rp:                       d.rp,
 						client:                   d.client,
+						chProcessorError:         d.chProcessorError,
 					}
 					stream.initialize()
 					d.rp.add(stream)
@@ -278,9 +284,12 @@ func (d *clientPrimaryDownloader) run(ctx context.Context) error {
 		}
 	}
 
-	for _, stream := range streams {
+	for range streams {
 		select {
-		case err = <-stream.chProcessorError:
+		case err = <-d.chProcessorError:
+			if !errors.Is(err, ErrClientEOS) {
+				return err
+			}
 		case <-ctx.Done():
 			return fmt.Errorf("terminated")
 		}
